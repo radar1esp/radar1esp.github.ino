@@ -43,7 +43,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <section class="card">
 <h2>Historie rychlostí</h2>
 <table>
-<thead><tr><th>Čas</th><th>Rychlost</th><th>Vzdálenost</th><th>Úhel</th></tr></thead>
+<thead><tr><th>Čas</th><th>Rychlost</th><th>Směr</th><th>Vzdálenost</th><th>Úhel</th></tr></thead>
 <tbody id="history"></tbody>
 </table>
 </section>
@@ -52,69 +52,165 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <script>
 const SERVICE_UUID="6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const DATA_UUID="6e400003-b5a3-f393-e0a9-e50e24dcca9e";
-const HISTORY_KEY="esp-radar-history";
+const HISTORY_KEY="esp-radar-history-v3";
+
 const btn=document.getElementById("connect");
 const statusEl=document.getElementById("status");
 let history=JSON.parse(localStorage.getItem(HISTORY_KEY)||"[]");
+
 let lastFrame=0;
+let lastDistance=null;
+let lastSign="";
 
 function $(id){return document.getElementById(id)}
 function saveHistory(){localStorage.setItem(HISTORY_KEY,JSON.stringify(history))}
+function signFromDirectionCode(code){
+  if(code===1)return "+";
+  if(code===2)return "-";
+  return "";
+}
+function inferSign(hasTarget,distance,code,isNewFrame){
+  if(!hasTarget){
+    lastDistance=null;
+    lastSign="";
+    return "";
+  }
+
+  const fromRadar=signFromDirectionCode(code);
+  if(fromRadar){
+    if(isNewFrame)lastDistance=distance;
+    lastSign=fromRadar;
+    return fromRadar;
+  }
+
+  if(isNewFrame && lastDistance!==null){
+    if(distance<lastDistance)lastSign="+";
+    if(distance>lastDistance)lastSign="-";
+  }
+
+  if(isNewFrame)lastDistance=distance;
+  return lastSign;
+}
+function directionText(code,sign){
+  if(code===1)return "+ k radaru";
+  if(code===2)return "- od radaru";
+  if(code===0 && sign==="+")return "+ podle vzdálenosti";
+  if(code===0 && sign==="-")return "- podle vzdálenosti";
+  return `kód ${code}`;
+}
+function signedSpeed(speed,sign){
+  if(sign==="+"||sign==="-")return `${sign}${Math.abs(speed).toFixed(1)}`;
+  return speed.toFixed(1);
+}
 function renderHistory(){
-  $("history").innerHTML=history.map(x=>`<tr><td>${x.time}</td><td>${x.speed.toFixed(1)} km/h</td><td>${x.distance} m</td><td>${x.angle}°</td></tr>`).join("");
+  $("history").innerHTML=history.map(x=>`
+    <tr>
+      <td>${x.time}</td>
+      <td>${signedSpeed(x.speed,x.sign)} km/h</td>
+      <td>${x.direction}</td>
+      <td>${x.distance} m</td>
+      <td>${x.angle}°</td>
+    </tr>
+  `).join("");
 }
 function addHistory(d){
   if(!d.hasTarget||!d.fresh||d.speed<=0)return;
-  history.unshift({time:new Date().toLocaleTimeString("cs-CZ"),speed:d.speed,distance:d.distance,angle:d.angle});
+  history.unshift({
+    time:new Date().toLocaleTimeString("cs-CZ"),
+    speed:d.speed,
+    sign:d.sign,
+    direction:d.directionText,
+    distance:d.distance,
+    angle:d.angle
+  });
   history=history.slice(0,100);
-  saveHistory();renderHistory();
+  saveHistory();
+  renderHistory();
 }
 function decode(v){
   const flags=v.getUint8(0);
   const hasTarget=(flags&1)!==0;
-  const fresh=(flags&2)!==0 && v.getUint32(6,true)!==lastFrame;
-  lastFrame=v.getUint32(6,true);
+  const freshFromEsp=(flags&2)!==0;
+  const rawSpeed=v.getUint8(1);
+  const distance=v.getUint8(2);
+  const angle=v.getInt8(3);
+  const directionCode=v.getUint8(4);
+  const frames=v.getUint32(6,true);
+  const isNewFrame=frames!==lastFrame;
+
+  if(isNewFrame)lastFrame=frames;
+
+  const sign=inferSign(hasTarget,distance,directionCode,isNewFrame);
   const payload=[];
   for(let i=10;i<20;i++)payload.push(v.getUint8(i).toString(16).padStart(2,"0").toUpperCase());
+
   return {
-    hasTarget,fresh,
-    speed:v.getUint8(1),
-    distance:v.getUint8(2),
-    angle:v.getInt8(3),
-    direction:v.getUint8(4),
-    frames:lastFrame,
-    raw:v.getUint8(1),
+    hasTarget,
+    fresh:hasTarget&&freshFromEsp&&isNewFrame,
+    speed:rawSpeed,
+    raw:rawSpeed,
+    sign,
+    distance,
+    angle,
+    directionCode,
+    directionText:directionText(directionCode,sign),
+    frames,
     payload:payload.join(" ")
   };
 }
 function show(d){
-  $("speed").textContent=d.hasTarget?d.speed.toFixed(1):"0.0";
+  $("speed").textContent=d.hasTarget?signedSpeed(d.speed,d.sign):"0.0";
   $("distance").textContent=d.hasTarget?d.distance:"0";
   $("target").textContent=d.hasTarget?"ano":"ne";
   $("angle").textContent=d.hasTarget?d.angle:"0";
-  $("direction").textContent=d.hasTarget?`kód ${d.direction}`:"-";
+  $("direction").textContent=d.hasTarget?d.directionText:"-";
   $("frames").textContent=d.frames;
   $("raw").textContent=d.raw;
   $("payload").textContent=d.payload;
   addHistory(d);
 }
 async function connect(){
-  if(!window.isSecureContext){statusEl.textContent="Stránka musí být otevřená přes HTTPS.";return}
-  if(!navigator.bluetooth){statusEl.textContent="Tento prohlížeč nepodporuje Web Bluetooth.";return}
-  btn.disabled=true;statusEl.textContent="Vyber zařízení ESP-RADAR.";
+  if(!window.isSecureContext){
+    statusEl.textContent="Stránka musí být otevřená přes HTTPS.";
+    return;
+  }
+  if(!navigator.bluetooth){
+    statusEl.textContent="Tento prohlížeč nepodporuje Web Bluetooth.";
+    return;
+  }
+
+  btn.disabled=true;
+  statusEl.textContent="Vyber zařízení ESP-RADAR.";
+
   try{
-    const device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE_UUID]});
+    const device=await navigator.bluetooth.requestDevice({
+      acceptAllDevices:true,
+      optionalServices:[SERVICE_UUID]
+    });
+
+    device.addEventListener("gattserverdisconnected",()=>{
+      btn.disabled=false;
+      btn.textContent="Připojit radar";
+      statusEl.textContent="Bluetooth odpojeno.";
+    });
+
     const server=await device.gatt.connect();
     const service=await server.getPrimaryService(SERVICE_UUID);
     const ch=await service.getCharacteristic(DATA_UUID);
+
     ch.addEventListener("characteristicvaluechanged",e=>show(decode(e.target.value)));
     await ch.startNotifications();
     show(decode(await ch.readValue()));
+
+    btn.textContent="Připojeno";
     statusEl.innerHTML=`Připojeno k <b>${device.name||"ESP-RADAR"}</b>`;
   }catch(e){
-    console.error(e);btn.disabled=false;statusEl.textContent="Připojení se nepovedlo.";
+    console.error(e);
+    btn.disabled=false;
+    statusEl.textContent="Připojení se nepovedlo.";
   }
 }
+
 btn.onclick=connect;
 renderHistory();
 </script>
