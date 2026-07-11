@@ -12,8 +12,9 @@ button{border:0;border-radius:8px;padding:12px 16px;font-weight:700;background:#
 .card{border:1px solid #30383d;background:#171b1f;border-radius:8px;padding:16px;margin-top:14px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .big{font-size:clamp(3rem,12vw,6rem);font-weight:800;line-height:.95}
-.muted{color:#a8b2b0}.ok{color:#2dd4bf}.bad{color:#fb7185}
-table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #30383d;text-align:left}
+.muted{color:#a8b2b0}
+table{width:100%;border-collapse:collapse}
+td,th{padding:8px;border-bottom:1px solid #30383d;text-align:left}
 @media(max-width:650px){.grid{grid-template-columns:1fr}button{width:100%}}
 </style>
 </head>
@@ -34,7 +35,6 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <section class="card">
 <div>Cíl: <b id="target">ne</b></div>
 <div>Úhel: <b id="angle">0</b>°</div>
-<div>Směr: <b id="direction">-</b></div>
 <div>Rámce: <b id="frames">0</b></div>
 <div>Raw rychlost: <b id="raw">0</b></div>
 <div>Payload: <b id="payload">00 00 00 00 00 00 00 00 00 00</b></div>
@@ -43,7 +43,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <section class="card">
 <h2>Historie rychlostí</h2>
 <table>
-<thead><tr><th>Čas</th><th>Rychlost</th><th>Směr</th><th>Vzdálenost</th><th>Úhel</th></tr></thead>
+<thead><tr><th>Čas</th><th>Rychlost</th><th>Vzdálenost</th><th>Úhel</th></tr></thead>
 <tbody id="history"></tbody>
 </table>
 </section>
@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 <script>
 const SERVICE_UUID="6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const DATA_UUID="6e400003-b5a3-f393-e0a9-e50e24dcca9e";
-const HISTORY_KEY="esp-radar-history-v3";
+const HISTORY_KEY="esp-radar-history-v4";
 
 const btn=document.getElementById("connect");
 const statusEl=document.getElementById("status");
@@ -64,11 +64,13 @@ let lastSign="";
 
 function $(id){return document.getElementById(id)}
 function saveHistory(){localStorage.setItem(HISTORY_KEY,JSON.stringify(history))}
+
 function signFromDirectionCode(code){
   if(code===1)return "+";
   if(code===2)return "-";
   return "";
 }
+
 function inferSign(hasTarget,distance,code,isNewFrame){
   if(!hasTarget){
     lastDistance=null;
@@ -91,42 +93,39 @@ function inferSign(hasTarget,distance,code,isNewFrame){
   if(isNewFrame)lastDistance=distance;
   return lastSign;
 }
-function directionText(code,sign){
-  if(code===1)return "+ k radaru";
-  if(code===2)return "- od radaru";
-  if(code===0 && sign==="+")return "+ podle vzdálenosti";
-  if(code===0 && sign==="-")return "- podle vzdálenosti";
-  return `kód ${code}`;
-}
+
 function signedSpeed(speed,sign){
   if(sign==="+"||sign==="-")return `${sign}${Math.abs(speed).toFixed(1)}`;
   return speed.toFixed(1);
 }
+
 function renderHistory(){
   $("history").innerHTML=history.map(x=>`
     <tr>
       <td>${x.time}</td>
       <td>${signedSpeed(x.speed,x.sign)} km/h</td>
-      <td>${x.direction}</td>
       <td>${x.distance} m</td>
       <td>${x.angle}°</td>
     </tr>
   `).join("");
 }
+
 function addHistory(d){
   if(!d.hasTarget||!d.fresh||d.speed<=0)return;
+
   history.unshift({
     time:new Date().toLocaleTimeString("cs-CZ"),
     speed:d.speed,
     sign:d.sign,
-    direction:d.directionText,
     distance:d.distance,
     angle:d.angle
   });
+
   history=history.slice(0,100);
   saveHistory();
   renderHistory();
 }
+
 function decode(v){
   const flags=v.getUint8(0);
   const hasTarget=(flags&1)!==0;
@@ -142,7 +141,9 @@ function decode(v){
 
   const sign=inferSign(hasTarget,distance,directionCode,isNewFrame);
   const payload=[];
-  for(let i=10;i<20;i++)payload.push(v.getUint8(i).toString(16).padStart(2,"0").toUpperCase());
+  for(let i=10;i<20;i++){
+    payload.push(v.getUint8(i).toString(16).padStart(2,"0").toUpperCase());
+  }
 
   return {
     hasTarget,
@@ -152,28 +153,28 @@ function decode(v){
     sign,
     distance,
     angle,
-    directionCode,
-    directionText:directionText(directionCode,sign),
     frames,
     payload:payload.join(" ")
   };
 }
+
 function show(d){
   $("speed").textContent=d.hasTarget?signedSpeed(d.speed,d.sign):"0.0";
   $("distance").textContent=d.hasTarget?d.distance:"0";
   $("target").textContent=d.hasTarget?"ano":"ne";
   $("angle").textContent=d.hasTarget?d.angle:"0";
-  $("direction").textContent=d.hasTarget?d.directionText:"-";
   $("frames").textContent=d.frames;
   $("raw").textContent=d.raw;
   $("payload").textContent=d.payload;
   addHistory(d);
 }
+
 async function connect(){
   if(!window.isSecureContext){
     statusEl.textContent="Stránka musí být otevřená přes HTTPS.";
     return;
   }
+
   if(!navigator.bluetooth){
     statusEl.textContent="Tento prohlížeč nepodporuje Web Bluetooth.";
     return;
